@@ -1,4 +1,4 @@
-# conditional transformers for Drug Design Project
-# app.py : streamlit app demo
-# .pth : our nanoDrugGPT model
-# 
+## conditional transformers for Drug Design Project
+ app.py : streamlit app demo
+ .pth : our nanoDrugGPT model
+ 
