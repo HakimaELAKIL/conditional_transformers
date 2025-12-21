@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-INTERFACE WEB POUR ANALYSE HIÉRARCHIQUE COMPLÈTE
-Interface Streamlit pour analyse hiérarchique de molécules générées
-Version académique - Design sobre
+WEB INTERFACE FOR COMPLETE HIERARCHICAL ANALYSIS
+Streamlit interface for hierarchical analysis of generated molecules
+Academic version - Clean design - Improved
 """
 
 import streamlit as st
@@ -27,6 +27,7 @@ from plotly.subplots import make_subplots
 import time
 import tempfile
 import base64
+import pickle
 
 # Désactiver les logs RDKit
 rdBase.DisableLog('rdApp.error')
@@ -246,6 +247,43 @@ class ConditionalDrugGPT(nn.Module):
         return logits, loss
 
 # --- FONCTIONS D'ANALYSE ADAPTÉES POUR STREAMLIT ---
+@st.cache_data
+def load_reference_smiles(reference_smiles_file):
+    """Charge le dataset de référence avec cache"""
+    reference_smiles = set()
+    if os.path.exists(reference_smiles_file):
+        with open(reference_smiles_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    mol = Chem.MolFromSmiles(line)
+                    if mol:
+                        canon_smiles = Chem.MolToSmiles(mol)
+                        reference_smiles.add(canon_smiles)
+    return reference_smiles
+
+@st.cache_resource
+def load_model_and_vocab():
+    """Charge le modèle et le vocabulaire avec cache"""
+    with open(VOCAB_FILE, 'r', encoding='utf-8') as f:
+        vocab_data = json.load(f)
+    stoi = vocab_data['stoi']
+    itos = vocab_data['itos']
+    
+    config = GPTConfig(vocab_size=len(stoi))
+    model = ConditionalDrugGPT(config)
+    model.to(DEVICE)
+    
+    try:
+        checkpoint = torch.load(CHECKPOINT_FILE, map_location=DEVICE, weights_only=True)
+        model.load_state_dict(checkpoint['model_state_dict'])
+    except:
+        checkpoint = torch.load(CHECKPOINT_FILE, map_location=DEVICE, weights_only=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+    
+    model.eval()
+    return model, stoi, itos
+
 def comprehensive_hierarchical_analysis(generated_smiles, reference_smiles_file, progress_bar=None, status_text=None):
     """Analyse hiérarchique complète avec barres de progression pour Streamlit"""
     if status_text:
@@ -268,17 +306,7 @@ def comprehensive_hierarchical_analysis(generated_smiles, reference_smiles_file,
     if status_text:
         status_text.text("Chargement du dataset de référence...")
     
-    reference_smiles = set()
-    if os.path.exists(reference_smiles_file):
-        with st.spinner("Chargement du dataset de référence..."):
-            with open(reference_smiles_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        mol = Chem.MolFromSmiles(line)
-                        if mol:
-                            canon_smiles = Chem.MolToSmiles(mol)
-                            reference_smiles.add(canon_smiles)
+    reference_smiles = load_reference_smiles(reference_smiles_file)
     
     # Niveau 1: Validation
     if status_text:
@@ -480,7 +508,7 @@ def generate_molecules(model, condition_tensor, stoi, itos, start_idx, end_idx,
     return generated_smiles
 
 def calculate_intdiv(smiles_list, status_text=None):
-    """Calcule la diversité interne sur un échantillon"""
+    """Calcule la diversité interne sur un échantillon avec optimisation"""
     if status_text:
         status_text.text("Calcul de la diversité interne (IntDiv)...")
     
@@ -488,8 +516,8 @@ def calculate_intdiv(smiles_list, status_text=None):
         return 0.0
     
     # Échantillonnage pour performance
-    sample_size = min(1000, len(smiles_list))
-    if len(smiles_list) > 1000:
+    sample_size = min(2000, len(smiles_list))  # Augmenté à 2000 pour plus de précision
+    if len(smiles_list) > sample_size:
         indices = np.random.choice(len(smiles_list), sample_size, replace=False)
         sample_smiles = [smiles_list[i] for i in indices]
     else:
@@ -512,19 +540,17 @@ def calculate_intdiv(smiles_list, status_text=None):
     if len(fingerprints) < 2:
         return 0.0
     
+    # Utilisation de BulkTanimotoSimilarity pour optimisation
     similarities = []
     similarity_progress = st.progress(0, text="Calcul des similarités...")
-    total_pairs = len(fingerprints) * (len(fingerprints) - 1) // 2
-    pair_count = 0
     
+    # Calculer les similarités par paires de manière optimisée
     for i in range(len(fingerprints)):
-        for j in range(i+1, len(fingerprints)):
-            similarity = DataStructs.TanimotoSimilarity(fingerprints[i], fingerprints[j])
-            similarities.append(similarity)
-            pair_count += 1
-            
-            if pair_count % max(1, total_pairs // 100) == 0:
-                similarity_progress.progress(pair_count / total_pairs)
+        sims = DataStructs.BulkTanimotoSimilarity(fingerprints[i], fingerprints[i+1:])
+        similarities.extend(sims)
+        
+        if (i + 1) % max(1, len(fingerprints) // 100) == 0:
+            similarity_progress.progress((i + 1) / len(fingerprints))
     
     similarity_progress.empty()
     
@@ -603,6 +629,35 @@ def create_visualization(results):
     )
     
     return fig1, fig2
+
+def save_results_to_file(results, condition_option, temperature, num_molecules):
+    """Sauvegarde les résultats dans un fichier pickle"""
+    timestamp = time.strftime('%Y%m%d_%H%M%S')
+    filename = f"results_{timestamp}.pkl"
+    
+    data_to_save = {
+        'results': results,
+        'parameters': {
+            'condition': condition_option,
+            'temperature': temperature,
+            'num_molecules': num_molecules,
+            'timestamp': timestamp
+        }
+    }
+    
+    with open(filename, 'wb') as f:
+        pickle.dump(data_to_save, f)
+    
+    return filename
+
+def load_results_from_file(uploaded_file):
+    """Charge les résultats depuis un fichier pickle"""
+    try:
+        data = pickle.load(uploaded_file)
+        return data['results'], data['parameters']
+    except Exception as e:
+        st.error(f"Erreur lors du chargement: {e}")
+        return None, None
 
 # --- INTERFACE STREAMLIT ---
 def main():
@@ -781,6 +836,27 @@ def main():
             type="primary",
             use_container_width=True
         )
+        
+        # Section sauvegarde/chargement
+        st.markdown('<div class="section-header">Sauvegarde et Chargement</div>', unsafe_allow_html=True)
+        
+        save_button = st.button(
+            "Sauvegarder les résultats actuels",
+            disabled=('results' not in st.session_state or st.session_state.results is None),
+            use_container_width=True
+        )
+        
+        uploaded_file = st.file_uploader(
+            "Charger des résultats précédents (.pkl)",
+            type=['pkl'],
+            help="Chargez un fichier de résultats sauvegardé"
+        )
+        
+        if uploaded_file is not None:
+            load_button = st.button(
+                "Charger les résultats",
+                use_container_width=True
+            )
     
     # Contenu principal
     if generate_button:
@@ -795,28 +871,11 @@ def main():
         with progress_container:
             status_text = st.empty()
             try:
-                # Chargements
-                status_text.text("Chargement du vocabulaire...")
-                with open(VOCAB_FILE, 'r', encoding='utf-8') as f:
-                    vocab_data = json.load(f)
-                stoi = vocab_data['stoi']
-                itos = vocab_data['itos']
+                # Chargements avec cache
+                status_text.text("Chargement du vocabulaire et du modèle...")
+                model, stoi, itos = load_model_and_vocab()
                 start_token = stoi['<start>']
                 end_token = stoi['<end>']
-                
-                status_text.text("Chargement du modèle...")
-                config = GPTConfig(vocab_size=len(stoi))
-                model = ConditionalDrugGPT(config)
-                model.to(DEVICE)
-                
-                try:
-                    checkpoint = torch.load(CHECKPOINT_FILE, map_location=DEVICE, weights_only=True)
-                    model.load_state_dict(checkpoint['model_state_dict'])
-                except:
-                    checkpoint = torch.load(CHECKPOINT_FILE, map_location=DEVICE, weights_only=False)
-                    model.load_state_dict(checkpoint['model_state_dict'])
-                
-                model.eval()
                 
                 # Condition de génération
                 condition_vector = CONDITIONS[condition_option]["get_vector"](None)
@@ -849,159 +908,181 @@ def main():
             except Exception as e:
                 status_text.text(f"Erreur: {str(e)}")
                 st.error(f"Une erreur s'est produite: {str(e)}")
+    
+    # Gestion de la sauvegarde
+    if save_button and 'results' in st.session_state and st.session_state.results is not None:
+        try:
+            filename = save_results_to_file(
+                st.session_state.results, 
+                condition_option if 'condition_option' in locals() else 2,
+                temperature if 'temperature' in locals() else 0.6,
+                num_molecules if 'num_molecules' in locals() else 10000
+            )
+            st.success(f"Résultats sauvegardés dans {filename}")
+        except Exception as e:
+            st.error(f"Erreur lors de la sauvegarde: {e}")
+    
+    # Gestion du chargement
+    if uploaded_file is not None and load_button:
+        results, params = load_results_from_file(uploaded_file)
+        if results is not None:
+            st.session_state.results = results
+            st.success("Résultats chargés avec succès !")
+            if params:
+                st.info(f"Paramètres: Condition {params.get('condition', 'N/A')}, Température {params.get('temperature', 'N/A')}, {params.get('num_molecules', 'N/A')} molécules")
+    
+    # Affichage des résultats
+    if 'results' in st.session_state and st.session_state.results:
+        results = st.session_state.results
         
-        # Affichage des résultats
-        if st.session_state.results:
-            results = st.session_state.results
+        with results_container:
+            st.markdown('<div class="section-header">Résultats de l\'Analyse</div>', unsafe_allow_html=True)
             
-            with results_container:
-                st.markdown('<div class="section-header">Résultats de l\'Analyse</div>', unsafe_allow_html=True)
+            # Métriques principales
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Molécules Générées</div>
+                    <div class="metric-value">{results['total_generated']:,}</div>
+                    <div>Total initial</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Molécules Valides</div>
+                    <div class="metric-value">{results['total_valid']:,}</div>
+                    <div>{results['validity_percentage']:.1f}% du total</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Molécules Nouvelles</div>
+                    <div class="metric-value">{results['total_novel']:,}</div>
+                    <div>{results['novelty_percentage']:.1f}% des valides</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col4:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Uniques Nouvelles</div>
+                    <div class="metric-value">{results['total_unique_novel']:,}</div>
+                    <div>{results['uniqueness_percentage']:.1f}% des nouvelles</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Visualisations
+            st.markdown('<div class="section-header">Visualisations des Résultats</div>', unsafe_allow_html=True)
+            
+            fig1, fig2 = create_visualization(results)
+            
+            col_viz1, col_viz2 = st.columns(2)
+            with col_viz1:
+                st.plotly_chart(fig1, use_container_width=True)
+            with col_viz2:
+                st.plotly_chart(fig2, use_container_width=True)
+            
+            # Diversité interne
+            if results.get('intdiv') is not None:
+                st.markdown('<div class="section-header">Analyse de Diversité</div>', unsafe_allow_html=True)
                 
-                # Métriques principales
-                col1, col2, col3, col4 = st.columns(4)
+                intdiv_value = results['intdiv']
                 
-                with col1:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <div class="metric-label">Molécules Générées</div>
-                        <div class="metric-value">{results['total_generated']:,}</div>
-                        <div>Total initial</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <div class="metric-label">Molécules Valides</div>
-                        <div class="metric-value">{results['total_valid']:,}</div>
-                        <div>{results['validity_percentage']:.1f}% du total</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col3:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <div class="metric-label">Molécules Nouvelles</div>
-                        <div class="metric-value">{results['total_novel']:,}</div>
-                        <div>{results['novelty_percentage']:.1f}% des valides</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col4:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <div class="metric-label">Uniques Nouvelles</div>
-                        <div class="metric-value">{results['total_unique_novel']:,}</div>
-                        <div>{results['uniqueness_percentage']:.1f}% des nouvelles</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                # Visualisations
-                st.markdown('<div class="section-header">Visualisations des Résultats</div>', unsafe_allow_html=True)
-                
-                fig1, fig2 = create_visualization(results)
-                
-                col_viz1, col_viz2 = st.columns(2)
-                with col_viz1:
-                    st.plotly_chart(fig1, use_container_width=True)
-                with col_viz2:
-                    st.plotly_chart(fig2, use_container_width=True)
-                
-                # Diversité interne
-                if results.get('intdiv') is not None:
-                    st.markdown('<div class="section-header">Analyse de Diversité</div>', unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Diversité Interne (IntDiv)</div>
+                    <div class="metric-value">{intdiv_value:.4f}</div>
+                    <div>Calculée sur {min(2000, results['total_unique_novel'])} molécules uniques nouvelles</div>
+                    <div><small>IntDiv = 1 - similarité moyenne (1 = diversité maximale)</small></div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Détails par condition
+            st.markdown('<div class="section-header">Analyse par Condition</div>', unsafe_allow_html=True)
+            
+            for condition_idx in range(4):
+                with st.expander(f"{CONDITIONS[condition_idx]['name']}", expanded=(condition_idx==0)):
+                    count = results['condition_results']['condition_counts'][condition_idx]
+                    percentage = results['condition_results']['condition_percentages'][condition_idx]
                     
-                    intdiv_value = results['intdiv']
-                    
                     st.markdown(f"""
-                    <div class="metric-card">
-                        <div class="metric-label">Diversité Interne (IntDiv)</div>
-                        <div class="metric-value">{intdiv_value:.4f}</div>
-                        <div>Calculée sur {min(1000, results['total_unique_novel'])} molécules uniques nouvelles</div>
-                        <div><small>IntDiv = 1 - similarité moyenne (1 = diversité maximale)</small></div>
+                    <div class="info-box">
+                        <strong>Description:</strong> {CONDITIONS[condition_idx]['description']}<br>
+                        <strong>Molécules satisfaisantes:</strong> {count}/{results['total_unique_novel']} ({percentage:.1f}%)
                     </div>
                     """, unsafe_allow_html=True)
-                
-                # Détails par condition
-                st.markdown('<div class="section-header">Analyse par Condition</div>', unsafe_allow_html=True)
-                
-                for condition_idx in range(4):
-                    with st.expander(f"{CONDITIONS[condition_idx]['name']}", expanded=(condition_idx==0)):
-                        count = results['condition_results']['condition_counts'][condition_idx]
-                        percentage = results['condition_results']['condition_percentages'][condition_idx]
-                        
-                        st.markdown(f"""
-                        <div class="info-box">
-                            <strong>Description:</strong> {CONDITIONS[condition_idx]['description']}<br>
-                            <strong>Molécules satisfaisantes:</strong> {count}/{results['total_unique_novel']} ({percentage:.1f}%)
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Exemples
-                        if show_examples and results['condition_results']['examples_per_condition'][condition_idx]:
-                            st.markdown('<div class="subsection-header">Exemples de molécules</div>', unsafe_allow_html=True)
-                            for i, smiles in enumerate(results['condition_results']['examples_per_condition'][condition_idx][:3]):
-                                col_sm, col_prop = st.columns([2, 3])
-                                with col_sm:
-                                    st.code(smiles, language='text')
-                                
-                                # Propriétés
-                                if i < len(results['condition_results']['properties_per_condition'][condition_idx]):
-                                    with col_prop:
-                                        props = results['condition_results']['properties_per_condition'][condition_idx][i]
-                                        df_props = pd.DataFrame([props])
-                                        st.dataframe(df_props, use_container_width=True, hide_index=True)
-                
-                # Téléchargement des résultats
-                st.markdown('<div class="section-header">Export des Données</div>', unsafe_allow_html=True)
-                
-                # Préparation des données pour export
-                export_data = {
-                    'parametres': {
-                        'condition': CONDITIONS[condition_option]["name"],
-                        'temperature': temperature,
-                        'nombre_molecules': num_molecules
-                    },
-                    'resultats_generaux': {
-                        'total_generes': results['total_generated'],
-                        'total_valides': results['total_valid'],
-                        'pourcentage_valides': results['validity_percentage'],
-                        'total_nouvelles': results['total_novel'],
-                        'pourcentage_nouvelles': results['novelty_percentage'],
-                        'total_uniques_nouvelles': results['total_unique_novel'],
-                        'pourcentage_uniques': results['uniqueness_percentage'],
-                        'diversite_interne': results.get('intdiv', 'Non calculée')
-                    },
-                    'resultats_conditions': {}
+                    
+                    # Exemples
+                    if show_examples and results['condition_results']['examples_per_condition'][condition_idx]:
+                        st.markdown('<div class="subsection-header">Exemples de molécules</div>', unsafe_allow_html=True)
+                        for i, smiles in enumerate(results['condition_results']['examples_per_condition'][condition_idx][:3]):
+                            col_sm, col_prop = st.columns([2, 3])
+                            with col_sm:
+                                st.code(smiles, language='text')
+                            
+                            # Propriétés
+                            if i < len(results['condition_results']['properties_per_condition'][condition_idx]):
+                                with col_prop:
+                                    props = results['condition_results']['properties_per_condition'][condition_idx][i]
+                                    df_props = pd.DataFrame([props])
+                                    st.dataframe(df_props, use_container_width=True, hide_index=True)
+            
+            # Téléchargement des résultats
+            st.markdown('<div class="section-header">Export des Données</div>', unsafe_allow_html=True)
+            
+            # Préparation des données pour export
+            export_data = {
+                'parametres': {
+                    'condition': CONDITIONS[condition_option if 'condition_option' in locals() else 2]["name"],
+                    'temperature': temperature if 'temperature' in locals() else 0.6,
+                    'nombre_molecules': num_molecules if 'num_molecules' in locals() else 10000
+                },
+                'resultats_generaux': {
+                    'total_generes': results['total_generated'],
+                    'total_valides': results['total_valid'],
+                    'pourcentage_valides': results['validity_percentage'],
+                    'total_nouvelles': results['total_novel'],
+                    'pourcentage_nouvelles': results['novelty_percentage'],
+                    'total_uniques_nouvelles': results['total_unique_novel'],
+                    'pourcentage_uniques': results['uniqueness_percentage'],
+                    'diversite_interne': results.get('intdiv', 'Non calculée')
+                },
+                'resultats_conditions': {}
+            }
+            
+            for cond_idx in range(4):
+                export_data['resultats_conditions'][cond_idx] = {
+                    'nom': CONDITIONS[cond_idx]['name'],
+                    'satisfaites': results['condition_results']['condition_counts'][cond_idx],
+                    'pourcentage': results['condition_results']['condition_percentages'][cond_idx]
                 }
-                
-                for cond_idx in range(4):
-                    export_data['resultats_conditions'][cond_idx] = {
-                        'nom': CONDITIONS[cond_idx]['name'],
-                        'satisfaites': results['condition_results']['condition_counts'][cond_idx],
-                        'pourcentage': results['condition_results']['condition_percentages'][cond_idx]
-                    }
-                
-                # Export JSON
-                json_str = json.dumps(export_data, indent=2, ensure_ascii=False)
+            
+            # Export JSON
+            json_str = json.dumps(export_data, indent=2, ensure_ascii=False)
+            st.download_button(
+                label="Télécharger les résultats (JSON)",
+                data=json_str,
+                file_name=f"analyse_molecules_{time.strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+            
+            # Export des molécules uniques
+            if results['unique_novel_smiles']:
+                smiles_text = '\n'.join(results['unique_novel_smiles'])
                 st.download_button(
-                    label="Télécharger les résultats (JSON)",
-                    data=json_str,
-                    file_name=f"analyse_molecules_{time.strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json",
+                    label="Télécharger les SMILES uniques",
+                    data=smiles_text,
+                    file_name=f"smiles_uniques_{time.strftime('%Y%m%d_%H%M%S')}.smi",
+                    mime="text/plain",
                     use_container_width=True
                 )
-                
-                # Export des molécules uniques
-                if results['unique_novel_smiles']:
-                    smiles_text = '\n'.join(results['unique_novel_smiles'])
-                    st.download_button(
-                        label="Télécharger les SMILES uniques",
-                        data=smiles_text,
-                        file_name=f"smiles_uniques_{time.strftime('%Y%m%d_%H%M%S')}.smi",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
     
     else:
         # Page d'accueil
@@ -1042,7 +1123,7 @@ def main():
         </div>
         
         <div style="text-align: center; margin-top: 2rem; color: #7F8C8D; font-size: 0.9rem;">
-            Interface développée pour l'analyse hiérarchique de molécules générées
+            Interface développée pour l'analyse hiérarchique de molécules générées - Version améliorée
         </div>
         """, unsafe_allow_html=True)
 

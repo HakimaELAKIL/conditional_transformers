@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analyse Hiérarchique de Molécules Générées</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header class="main-header">
+            <h1>Analyse Hiérarchique de Molécules Générées</h1>
+            <p>Interface Flask pour l'analyse complète de molécules générées par modèle GPT conditionnel</p>
+        </header>
+
+        <div class="description-box">
+            <h3>Description de l'analyse hiérarchique</h3>
+            <p><strong>Hiérarchie d'analyse :</strong></p>
+            <ol>
+                <li><strong>Molécules Générées</strong> → 2. <strong>Valides</strong> → 3. <strong>Nouvelles</strong> → 4. <strong>Uniques Nouvelles</strong> → 5. <strong>Conditions</strong></li>
+            </ol>
+            <p>Cette analyse suit une approche hiérarchique stricte où chaque niveau dépend du précédent. Seules les molécules passant tous les filtres sont retenues pour l'analyse finale.</p>
+        </div>
+
+        <div class="form-section">
+            <h2>Paramètres de Génération</h2>
+            <form id="generationForm">
+                <div class="form-group">
+                    <label for="condition">Condition de génération :</label>
+                    <select id="condition" name="condition">
+                        {% for key, condition in conditions.items() %}
+                        <option value="{{ key }}">{{ condition.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <div id="conditionDescription" class="condition-description"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="numMolecules">Nombre de molécules à générer :</label>
+                    <input type="range" id="numMolecules" name="numMolecules" min="100" max="50000" value="10000" step="100">
+                    <span id="numMoleculesValue">10000</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="temperature">Température d'échantillonnage :</label>
+                    <input type="range" id="temperature" name="temperature" min="0.1" max="2.0" value="0.6" step="0.1">
+                    <span id="temperatureValue">0.6</span>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="calculateIntdiv" name="calculateIntdiv" checked>
+                        Calculer la diversité interne (IntDiv)
+                    </label>
+                </div>
+
+                <button type="submit" id="generateBtn" class="btn btn-primary">Lancer la génération et l'analyse</button>
+            </form>
+        </div>
+
+        <div id="progressSection" class="progress-section" style="display: none;">
+            <h2>Progression de l'analyse</h2>
+            <div id="progressContainer">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div id="progressMessage" class="progress-message">Initialisation...</div>
+            </div>
+        </div>
+
+        <div id="resultsSection" class="results-section" style="display: none;">
+            <h2>Résultats de l'Analyse</h2>
+
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">Molécules Générées</div>
+                    <div class="metric-value" id="totalGenerated">-</div>
+                    <div>Total initial</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Molécules Valides</div>
+                    <div class="metric-value" id="totalValid">-</div>
+                    <div id="validityPercentage">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Molécules Nouvelles</div>
+                    <div class="metric-value" id="totalNovel">-</div>
+                    <div id="noveltyPercentage">-</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Uniques Nouvelles</div>
+                    <div class="metric-value" id="totalUniqueNovel">-</div>
+                    <div id="uniquenessPercentage">-</div>
+                </div>
+            </div>
+
+            <div id="intdivSection" class="intdiv-section" style="display: none;">
+                <h3>Analyse de Diversité</h3>
+                <div class="metric-card">
+                    <div class="metric-label">Diversité Interne (IntDiv)</div>
+                    <div class="metric-value" id="intdivValue">-</div>
+                    <div id="intdivDescription">-</div>
+                </div>
+            </div>
+
+            <div class="visualizations-section">
+                <h3>Visualisations des Résultats</h3>
+                <div class="charts-grid">
+                    <div class="chart-container">
+                        <div id="hierarchyChart"></div>
+                    </div>
+                    <div class="chart-container">
+                        <div id="conditionsChart"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="conditions-details">
+                <h3>Analyse par Condition</h3>
+                <div id="conditionsContainer"></div>
+            </div>
+
+            <div class="export-section">
+                <h3>Export des Données</h3>
+                <div class="export-buttons">
+                    <button id="downloadJsonBtn" class="btn btn-secondary">Télécharger JSON</button>
+                    <button id="downloadSmilesBtn" class="btn btn-secondary">Télécharger SMILES</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="errorSection" class="error-section" style="display: none;">
+            <h2>Erreur</h2>
+            <div id="errorMessage" class="error-message"></div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
